@@ -20,16 +20,20 @@ import android.text.TextUtils;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.webkit.WebView;
+import android.widget.Toast;
 
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -105,12 +109,31 @@ public class SensorsDataAPI {
     }
 
 
-    SensorsDataAPI(Context context, Context activityContext, String serverURL, String configureURL,
+    SensorsDataAPI(Context context, String serverURL, String configureURL,
                    String vtrackServerURL, DebugMode debugMode) {
         mContext = context;
-        mActivityContext = activityContext;
 
         final String packageName = context.getApplicationContext().getPackageName();
+
+        {
+            //中国移动
+            sCarrierMap.put("46000", " 中国移动");
+            sCarrierMap.put("46002", " 中国移动");
+            sCarrierMap.put("46007", " 中国移动");
+            sCarrierMap.put("46008", " 中国移动");
+
+            //中国联通
+            sCarrierMap.put("46001", " 中国联通");
+            sCarrierMap.put("46006", " 中国联通");
+            sCarrierMap.put("46009", " 中国联通");
+
+            //中国电信
+            sCarrierMap.put("46003", " 中国电信");
+            sCarrierMap.put("46005", " 中国电信");
+            sCarrierMap.put("46011", " 中国电信");
+        }
+
+        mFilterActivities = new ArrayList<>();
 
         try {
             final ApplicationInfo appInfo = context.getApplicationContext().getPackageManager()
@@ -143,6 +166,10 @@ public class SensorsDataAPI {
             }
 
             mDebugMode = debugMode;
+            //打开debug模式，弹出提示
+            if (mDebugMode != DebugMode.DEBUG_OFF) {
+                showDebugModeWarning();
+            }
 
             ENABLE_LOG = configBundle.getBoolean("com.sensorsdata.analytics.android.EnableLogging",
                     false);
@@ -213,16 +240,12 @@ public class SensorsDataAPI {
                     .TELEPHONY_SERVICE);
             String operatorString = telephonyManager.getSimOperator();
 
-            if (operatorString == null) {
-                // DO NOTHING
-            } else if (operatorString.equals("46000") || operatorString.equals("46002")) {
-                deviceInfo.put("$carrier", "中国移动");
-            } else if (operatorString.equals("46001")) {
-                deviceInfo.put("$carrier", "中国联通");
-            } else if (operatorString.equals("46003")) {
-                deviceInfo.put("$carrier", "中国电信");
-            } else {
-                deviceInfo.put("$carrier", "其他");
+            if (!TextUtils.isEmpty(operatorString)) {
+                if (sCarrierMap.containsKey(operatorString)) {
+                    deviceInfo.put("$carrier", sCarrierMap.get(operatorString));
+                } else {
+                    deviceInfo.put("$carrier", "其他");
+                }
             }
         }
 
@@ -241,8 +264,14 @@ public class SensorsDataAPI {
                 sPrefsLoader.loadPreferences(context, prefsName, listener);
 
         mDistinctId = new PersistentDistinctId(storedPreferences);
+        mLoginId = new PersistentLoginId(storedPreferences);
         mSuperProperties = new PersistentSuperProperties(storedPreferences);
         mFirstStart = new PersistentFirstStart(storedPreferences);
+        mFirstTrackInstallation = new PersistentFirstTrackInstallation(storedPreferences);
+        mFirstDay = new PersistentFirstDay(storedPreferences);
+        if (mFirstDay.get() == null) {
+            mFirstDay.commit(mIsFirstDayDateFormat.format(System.currentTimeMillis()));
+        }
 
         mMessages = AnalyticsMessages.getInstance(mContext, packageName);
 
@@ -295,8 +324,7 @@ public class SensorsDataAPI {
 
             SensorsDataAPI instance = sInstanceMap.get(appContext);
             if (null == instance && ConfigurationChecker.checkBasicConfiguration(appContext)) {
-                instance = new SensorsDataAPI(appContext, context, serverURL, configureUrl, null,
-                        debugMode);
+                instance = new SensorsDataAPI(appContext, serverURL, configureUrl, null, debugMode);
                 sInstanceMap.put(appContext, instance);
             }
 
@@ -316,7 +344,7 @@ public class SensorsDataAPI {
      * @return SensorsDataAPI单例
      */
     public static SensorsDataAPI sharedInstance(Context context, String serverURL,
-                                                String configureURL, String vtrackServerURL, DebugMode debugMode) {
+        String configureURL, String vtrackServerURL, DebugMode debugMode) {
         if (null == context) {
             return null;
         }
@@ -326,7 +354,7 @@ public class SensorsDataAPI {
 
             SensorsDataAPI instance = sInstanceMap.get(appContext);
             if (null == instance && ConfigurationChecker.checkBasicConfiguration(appContext)) {
-                instance = new SensorsDataAPI(appContext, context, serverURL, configureURL, vtrackServerURL,
+                instance = new SensorsDataAPI(appContext, serverURL, configureURL, vtrackServerURL,
                         debugMode);
                 sInstanceMap.put(appContext, instance);
             }
@@ -432,8 +460,22 @@ public class SensorsDataAPI {
      * @param isSupportJellyBean 是否支持API level 16及以下的版本。
      * 因为API level 16及以下的版本, addJavascriptInterface有安全漏洞,请谨慎使用
      */
+    @Deprecated
     @SuppressLint(value = {"SetJavaScriptEnabled", "addJavascriptInterface"})
     public void showUpWebView(WebView webView, boolean isSupportJellyBean) {
+        showUpWebView(webView, isSupportJellyBean, null);
+    }
+
+    /**
+     * 向WebView注入本地方法, 将distinctId传递给当前的WebView
+     *
+     * @param webView 当前WebView
+     * @param isSupportJellyBean 是否支持API level 16及以下的版本。
+     *                           因为API level 16及以下的版本, addJavascriptInterface有安全漏洞,请谨慎使用
+     * @param properties 用户自定义属性
+     */
+    @SuppressLint(value = {"SetJavaScriptEnabled", "addJavascriptInterface"})
+    public void showUpWebView(WebView webView, boolean isSupportJellyBean, JSONObject properties) {
         if (Build.VERSION.SDK_INT < 17 && !isSupportJellyBean) {
             Log.i(LOGTAG, "For applications targeted to API level JELLY_BEAN or below, this feature NOT SUPPORTED");
             return;
@@ -441,7 +483,30 @@ public class SensorsDataAPI {
 
         if (webView != null) {
             webView.getSettings().setJavaScriptEnabled(true);
-            webView.addJavascriptInterface(new AppWebViewInterface(mContext), "SensorsData_APP_JS_Bridge");
+            webView.addJavascriptInterface(new AppWebViewInterface(mContext, properties), "SensorsData_APP_JS_Bridge");
+        }
+    }
+
+    /**
+     * 指定哪些 activity 不被AutoTrack
+     *
+     * 指定activity的格式为：activity.getClass().getCanonicalName()
+     *
+     * @param activitiesList  activity列表
+     */
+    public void filterAutoTrackActivities(List<String> activitiesList) {
+        if (activitiesList == null || activitiesList.size() == 0) {
+            return;
+        }
+
+        if (mFilterActivities == null) {
+            mFilterActivities = new ArrayList<>();
+        }
+
+        for (String activity: activitiesList) {
+            if (!TextUtils.isEmpty(activity) && !mFilterActivities.contains(activity)) {
+                mFilterActivities.add(activity);
+            }
         }
     }
 
@@ -451,11 +516,50 @@ public class SensorsDataAPI {
      * 若调用前未调用 {@link #identify(String)} 设置用户的 distinctId，SDK 会调用 {@link java.util.UUID} 随机生成
      * UUID，作为用户的 distinctId
      *
+     * 该方法已不推荐使用，请参考 {@link #getAnonymousId()}
+     *
      * @return 当前用户的distinctId
      */
+    @Deprecated
     public String getDistinctId() {
         synchronized (mDistinctId) {
             return mDistinctId.get();
+        }
+    }
+
+    /**
+     * 获取当前用户的匿名id
+     *
+     * 若调用前未调用 {@link #identify(String)} 设置用户的匿名id，SDK 会调用 {@link java.util.UUID} 随机生成
+     * UUID，作为用户的匿名id
+     *
+     * @return 当前用户的匿名id
+     */
+    public String getAnonymousId() {
+        synchronized (mDistinctId) {
+            return mDistinctId.get();
+        }
+    }
+
+    /**
+     * 重置默认匿名id
+     */
+    public void resetAnonymousId() {
+        synchronized (mDistinctId) {
+            mDistinctId.commit(UUID.randomUUID().toString());
+        }
+    }
+
+    /**
+     * 获取当前用户的 loginId
+     *
+     * 若调用前未调用 {@link #login(String)} 设置用户的 loginId，会返回null
+     *
+     * @return 当前用户的 loginId
+     */
+    public String getLoginId() {
+        synchronized (mLoginId) {
+            return mLoginId.get();
         }
     }
 
@@ -476,17 +580,47 @@ public class SensorsDataAPI {
     }
 
     /**
+     * 登录，设置当前用户的 loginId
+     *
+     * @param loginId 当前用户的 loginId，不能为空，且长度不能大于255
+     * @throws com.sensorsdata.analytics.android.sdk.exceptions.InvalidDataException 当 loginId
+     *                                                                               不符合规范时抛出异常
+     */
+    public void login(String loginId) throws InvalidDataException {
+        assertDistinctId(loginId);
+        synchronized (mLoginId) {
+            if (!loginId.equals(mLoginId.get())) {
+                mLoginId.commit(loginId);
+                if (!loginId.equals(getAnonymousId())) {
+                    trackEvent(EventType.TRACK_SIGNUP, "$SignUp", null, getAnonymousId());
+                }
+            }
+        }
+    }
+
+    /**
+     * 注销，清空当前用户的 loginId
+     */
+    public void logout() {
+        synchronized (mLoginId) {
+            mLoginId.commit(null);
+        }
+    }
+
+    /**
      * 记录第一次登录行为
      *
      * 这个接口是一个较为复杂的功能，请在使用前先阅读相关说明:
      * http://www.sensorsdata.cn/manual/track_signup.html
      * 并在必要时联系我们的技术支持人员。
+     * 该方法已不推荐使用，可以具体参考 {@link #login(String)} 方法
      *
      * @param newDistinctId 用户完成注册后生成的注册ID
      * @param properties    事件的属性
      * @throws com.sensorsdata.analytics.android.sdk.exceptions.InvalidDataException 当 distinctId
      *                                                                               不符合规范或事件属性不符合规范时抛出异常
      */
+    @Deprecated
     public void trackSignUp(String newDistinctId, JSONObject properties) throws InvalidDataException {
         String originalDistinctId = getDistinctId();
         identify(newDistinctId);
@@ -500,11 +634,13 @@ public class SensorsDataAPI {
      * 这个接口是一个较为复杂的功能，请在使用前先阅读相关说明:
      * http://www.sensorsdata.cn/manual/track_signup.html，
      * 并在必要时联系我们的技术支持人员。
+     * 该方法已不推荐使用，可以具体参考 {@link #login(String)} 方法
      *
      * @param newDistinctId 用户完成注册后生成的注册ID
      * @throws com.sensorsdata.analytics.android.sdk.exceptions.InvalidDataException 当 distinctId
      *                                                                               不符合规范时抛出异常
      */
+    @Deprecated
     public void trackSignUp(String newDistinctId) throws InvalidDataException {
         String originalDistinctId = getDistinctId();
         identify(newDistinctId);
@@ -524,11 +660,16 @@ public class SensorsDataAPI {
      */
     public void trackInstallation(String eventName, JSONObject properties)
             throws InvalidDataException {
-        // 先发送 track
-        trackEvent(EventType.TRACK, eventName, properties, null);
+        boolean firstTrackInstallation = mFirstTrackInstallation.get();
+        if (firstTrackInstallation) {
+            // 先发送 track
+            trackEvent(EventType.TRACK, eventName, properties, null);
 
-        // 再发送 profile_set_once
-        trackEvent(EventType.PROFILE_SET_ONCE, null, properties, null);
+            // 再发送 profile_set_once
+            trackEvent(EventType.PROFILE_SET_ONCE, null, properties, null);
+
+            mFirstTrackInstallation.commit(false);
+        }
     }
 
     /**
@@ -657,11 +798,12 @@ public class SensorsDataAPI {
                         if (eventTimer != null) {
                             long eventAccumulatedDuration = eventTimer.getEventAccumulatedDuration() + System.currentTimeMillis() - eventTimer.getStartTime();
                             eventTimer.setEventAccumulatedDuration(eventAccumulatedDuration);
+                            eventTimer.setStartTime(System.currentTimeMillis());
                         }
                     }
                 }
             } catch (Exception e) {
-                Log.d(LOGTAG, "appEnterBackground error:" + e.getMessage());
+                Log.i(LOGTAG, "appEnterBackground error:" + e.getMessage());
             }
         }
     }
@@ -685,7 +827,7 @@ public class SensorsDataAPI {
                     }
                 }
             } catch (Exception e) {
-                Log.d(LOGTAG, "appBecomeActive error:" + e.getMessage());
+                Log.i(LOGTAG, "appBecomeActive error:" + e.getMessage());
             }
         }
     }
@@ -722,9 +864,18 @@ public class SensorsDataAPI {
      * @throws com.sensorsdata.analytics.android.sdk.exceptions.InvalidDataException 当公共属性不符合规范时抛出异常
      */
     public void registerSuperProperties(JSONObject superProperties) throws InvalidDataException {
+        if (superProperties == null) {
+            return;
+        }
         assertPropertyTypes(EventType.REGISTER_SUPER_PROPERTIES, superProperties);
         synchronized (mSuperProperties) {
-            mSuperProperties.commit(superProperties);
+            try {
+                JSONObject properties = mSuperProperties.get();
+                mergeJSONObject(superProperties, properties);
+                mSuperProperties.commit(properties);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
         }
     }
 
@@ -932,6 +1083,24 @@ public class SensorsDataAPI {
         return mConfigureUrl;
     }
 
+    private void showDebugModeWarning() {
+        try {
+            if (mDebugMode == DebugMode.DEBUG_OFF) {
+                return;
+            }
+            String info = null;
+            if (mDebugMode == DebugMode.DEBUG_ONLY) {
+                info = "现在您打开了神策SDK的'DEBUG_ONLY'模式，此模式下只校验数据但不导入数据，数据出错时会以 App Crash 的方式提示开发者，请上线前一定关闭。";
+            } else if (mDebugMode == DebugMode.DEBUG_AND_TRACK) {
+                info = "现在您打开了神策SDK的'DEBUG_AND_TRACK'模式，此模式下校验数据并且导入数据，数据出错时会以 App Crash 的方式提示开发者，请上线前一定关闭。";
+            }
+
+            Toast.makeText(mContext, info, Toast.LENGTH_LONG).show();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
     private void trackEvent(EventType eventType, String eventName, JSONObject properties, String
             originalDistinctId) throws InvalidDataException {
         if (eventType.isTrack()) {
@@ -993,11 +1162,17 @@ public class SensorsDataAPI {
             dataObj.put("time", now);
             dataObj.put("type", eventType.getEventType());
             dataObj.put("properties", sendProperties);
-            dataObj.put("distinct_id", getDistinctId());
+            if (!TextUtils.isEmpty(getLoginId())) {
+                dataObj.put("distinct_id", getLoginId());
+            } else {
+                dataObj.put("distinct_id", getAnonymousId());
+            }
             dataObj.put("lib", libProperties);
 
             if (eventType == EventType.TRACK) {
                 dataObj.put("event", eventName);
+                //是否首日访问
+                sendProperties.put("$is_first_day", isFirstDay());
             } else if (eventType == EventType.TRACK_SIGNUP) {
                 dataObj.put("event", eventName);
                 dataObj.put("original_id", originalDistinctId);
@@ -1036,12 +1211,18 @@ public class SensorsDataAPI {
             if (isDepolyed) {
                 mMessages.enqueueEventMessage(eventType.getEventType(), dataObj);
                 if (SensorsDataAPI.ENABLE_LOG) {
-                    Log.d(LOGTAG, String.format("track data %s", dataObj.toString()));
+                    Log.i(LOGTAG, String.format("track data %s", dataObj.toString()));
                 }
             }
         } catch (JSONException e) {
             throw new InvalidDataException("Unexpteced property");
         }
+    }
+
+    private boolean isFirstDay() {
+        String firstDay = mFirstDay.get();
+        String current = mIsFirstDayDateFormat.format(System.currentTimeMillis());
+        return firstDay.equals(current);
     }
 
     private void assertPropertyTypes(EventType eventType, JSONObject properties) throws
@@ -1087,10 +1268,10 @@ public class SensorsDataAPI {
 
     private void assertDistinctId(String key) throws InvalidDataException {
         if (key == null || key.length() < 1) {
-            throw new InvalidDataException("The distinct_id or original_id is empty.");
+            throw new InvalidDataException("The distinct_id or original_id or login_id is empty.");
         }
         if (key.length() > 255) {
-            throw new InvalidDataException("The max length of distinct_id or original_id is 255.");
+            throw new InvalidDataException("The max length of distinct_id or original_id or login_id is 255.");
         }
     }
 
@@ -1168,6 +1349,7 @@ public class SensorsDataAPI {
     private class LifecycleCallbacks implements Application.ActivityLifecycleCallbacks {
 
         private boolean resumeFromBackground = false;
+        private Integer startedActivityCount = 0;
 
         public LifecycleCallbacks() {
         }
@@ -1178,36 +1360,43 @@ public class SensorsDataAPI {
 
         @Override
         public void onActivityStarted(Activity activity) {
-            if (activity.getClass().getCanonicalName()
-                    .equals(mActivityContext.getClass().getCanonicalName())) {
-                // XXX: 注意内部执行顺序
-                boolean firstStart = mFirstStart.get();
-                if (firstStart) {
-                    mFirstStart.commit(false);
-                }
-
-                if (mAutoTrack) {
-                    try {
-                        JSONObject properties = new JSONObject();
-                        properties.put("$resume_from_background", resumeFromBackground);
-                        properties.put("$is_first_time", firstStart);
-
-                        track("$AppStart", properties);
-
-                        trackTimer("$AppEnd", TimeUnit.SECONDS);
-                    } catch (InvalidDataException | JSONException e) {
-                        Log.w(LOGTAG, e);
+            synchronized (startedActivityCount) {
+                if (startedActivityCount == 0) {
+                    // XXX: 注意内部执行顺序
+                    boolean firstStart = mFirstStart.get();
+                    if (firstStart) {
+                        mFirstStart.commit(false);
                     }
+
+                    if (mAutoTrack) {
+                        try {
+                            JSONObject properties = new JSONObject();
+                            properties.put("$resume_from_background", resumeFromBackground);
+                            properties.put("$is_first_time", firstStart);
+
+                            track("$AppStart", properties);
+
+                            trackTimer("$AppEnd", TimeUnit.SECONDS);
+                        } catch (InvalidDataException | JSONException e) {
+                            Log.w(LOGTAG, e);
+                        }
+                    }
+
+                    // 下次启动时，从后台恢复
+                    resumeFromBackground = true;
                 }
 
-                // 下次启动时，从后台恢复
-                resumeFromBackground = true;
+                startedActivityCount = startedActivityCount + 1;
             }
         }
 
         @Override
         public void onActivityResumed(Activity activity) {
-            if (mAutoTrack) {
+            boolean mShowAutoTrack = true;
+            if (mFilterActivities != null && mFilterActivities.contains(activity.getClass().getCanonicalName())) {
+                mShowAutoTrack = false;
+            }
+            if (mAutoTrack && mShowAutoTrack) {
                 try {
                     JSONObject properties = new JSONObject();
                     properties.put("$screen_name", activity.getClass().getCanonicalName());
@@ -1236,16 +1425,26 @@ public class SensorsDataAPI {
 
         @Override
         public void onActivityStopped(Activity activity) {
-            if (mAutoTrack && activity.getClass().getCanonicalName().equals(mActivityContext.getClass()
-                    .getCanonicalName())) {
-                try {
-                    track("$AppEnd");
-                } catch (Exception e) {
-                    Log.w(LOGTAG, e);
+            synchronized (startedActivityCount) {
+                startedActivityCount = startedActivityCount - 1;
+
+                if (startedActivityCount == 0) {
+                    if (mAutoTrack) {
+                        try {
+                            track("$AppEnd");
+                        } catch (Exception e) {
+                            Log.w(LOGTAG, e);
+                        }
+                    }
+                    try {
+                        if (SensorsDataUtils.isNetworkAvailable(mContext)) {
+                            mMessages.flush();
+                        }
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                    }
                 }
             }
-
-            mMessages.flush();
         }
 
         @Override
@@ -1275,6 +1474,29 @@ public class SensorsDataAPI {
                 @Override
                 public String create() {
                     return UUID.randomUUID().toString();
+                }
+            });
+        }
+
+    }
+
+    static class PersistentLoginId extends PersistentIdentity<String> {
+
+        PersistentLoginId(Future<SharedPreferences> loadStoredPreferences) {
+            super(loadStoredPreferences, "events_login_id", new PersistentSerializer<String>() {
+                @Override
+                public String load(String value) {
+                    return value;
+                }
+
+                @Override
+                public String save(String item) {
+                    return item;
+                }
+
+                @Override
+                public String create() {
+                    return null;
                 }
             });
         }
@@ -1311,6 +1533,48 @@ public class SensorsDataAPI {
     static class PersistentFirstStart extends PersistentIdentity<Boolean> {
         PersistentFirstStart(Future<SharedPreferences> loadStoredPreferences) {
             super(loadStoredPreferences, "first_start", new PersistentSerializer<Boolean>() {
+                @Override
+                public Boolean load(String value) {
+                    return false;
+                }
+
+                @Override
+                public String save(Boolean item) {
+                    return String.valueOf(true);
+                }
+
+                @Override
+                public Boolean create() {
+                    return true;
+                }
+            });
+        }
+    }
+
+    static class PersistentFirstDay extends PersistentIdentity<String> {
+        PersistentFirstDay(Future<SharedPreferences> loadStoredPreferences) {
+            super(loadStoredPreferences, "first_day", new PersistentSerializer<String>() {
+                @Override
+                public String load(String value) {
+                    return value;
+                }
+
+                @Override
+                public String save(String item) {
+                    return item;
+                }
+
+                @Override
+                public String create() {
+                    return null;
+                }
+            });
+        }
+    }
+
+    static class PersistentFirstTrackInstallation extends PersistentIdentity<Boolean> {
+        PersistentFirstTrackInstallation(Future<SharedPreferences> loadStoredPreferences) {
+            super(loadStoredPreferences, "first_track_installation", new PersistentSerializer<Boolean>() {
                 @Override
                 public Boolean load(String value) {
                     return false;
@@ -1384,7 +1648,7 @@ public class SensorsDataAPI {
     static final int VTRACK_SUPPORTED_MIN_API = 16;
 
     // SDK版本
-    static final String VERSION = "1.6.16";
+    static final String VERSION = "1.6.28";
 
     static Boolean ENABLE_LOG = false;
 
@@ -1395,6 +1659,7 @@ public class SensorsDataAPI {
     // Maps each token to a singleton SensorsDataAPI instance
     private static final Map<Context, SensorsDataAPI> sInstanceMap = new HashMap<Context, SensorsDataAPI>();
     private static final SharedPreferencesLoader sPrefsLoader = new SharedPreferencesLoader();
+    private static final Map<String, String> sCarrierMap = new HashMap<>();
 
     // Configures
   /* SensorsAnalytics 地址 */
@@ -1416,18 +1681,22 @@ public class SensorsDataAPI {
     private JSONObject mLastScreenTrackProperties;
 
     private final Context mContext;
-    private final Context mActivityContext;
     private final AnalyticsMessages mMessages;
     private final PersistentDistinctId mDistinctId;
+    private final PersistentLoginId mLoginId;
     private final PersistentSuperProperties mSuperProperties;
     private final PersistentFirstStart mFirstStart;
+    private final PersistentFirstDay mFirstDay;
+    private final PersistentFirstTrackInstallation mFirstTrackInstallation;
     private final Map<String, Object> mDeviceInfo;
     private final Map<String, EventTimer> mTrackTimer;
+    private List<String> mFilterActivities;
 
     private final VTrack mVTrack;
 
     private static final SimpleDateFormat mDateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss"
             + ".SSS");
+    private static final SimpleDateFormat mIsFirstDayDateFormat = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault());
 
     private static final String LOGTAG = "SA.SensorsDataAPI";
 }

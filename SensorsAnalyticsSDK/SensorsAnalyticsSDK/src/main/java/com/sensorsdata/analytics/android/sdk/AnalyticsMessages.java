@@ -21,6 +21,7 @@ import org.json.JSONObject;
 
 import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -89,8 +90,7 @@ class AnalyticsMessages {
                         DbAdapter.DB_OUT_OF_MEMORY_ERROR) {
                     mWorker.runMessage(m);
                 } else {
-                    String networkType = SensorsDataUtils.networkType(mContext);
-                    if (networkType.equals("WIFI") || networkType.equals("3G") || networkType.equals("4G")) {
+                    if (SensorsDataUtils.isNetworkAvailable(mContext)) {
                         // track_signup 立即发送
                         if (type.equals("track_signup") || ret > SensorsDataAPI.sharedInstance(mContext)
                                 .getFlushBulkSize()) {
@@ -195,7 +195,11 @@ class AnalyticsMessages {
                     out = null;
 
                     int responseCode = connection.getResponseCode();
-                    in = connection.getInputStream();
+                    try {
+                        in = connection.getInputStream();
+                    } catch (FileNotFoundException e) {
+                        in = connection.getErrorStream();
+                    }
                     byte[] responseBody = slurp(in);
                     in.close();
                     in = null;
@@ -236,9 +240,17 @@ class AnalyticsMessages {
                     Log.i(LOGTAG, "Invalid data: " + e.getMessage());
                 }
             } catch (ResponseErrorException e) {
-                Log.i(LOGTAG, "ResponseErrorException: " + e.getMessage());
+                if (SensorsDataAPI.sharedInstance(mContext).isDebugMode()) {
+                    throw new DebugModeException(e.getMessage());
+                } else {
+                    Log.i(LOGTAG, "ResponseErrorException: " + e.getMessage());
+                }
             } catch (Exception e) {
-                Log.i(LOGTAG, "Exception: " + e.getMessage());
+                if (SensorsDataAPI.sharedInstance(mContext).isDebugMode()) {
+                    throw new DebugModeException(e.getMessage());
+                } else {
+                    Log.i(LOGTAG, "Exception: " + e.getMessage());
+                }
             } finally {
                 if (null != bout)
                     try {
@@ -377,7 +389,7 @@ class AnalyticsMessages {
                                 decideMessages.setVTrackServer(vtrackServer);
                             } catch (JSONException e1) {
                                 if (SensorsDataAPI.ENABLE_LOG) {
-                                    Log.d(LOGTAG, "Failed to load SDK configure with" + configureResult);
+                                    Log.i(LOGTAG, "Failed to load SDK configure with" + configureResult);
                                 }
                             }
                         } catch (ConnectErrorException e) {

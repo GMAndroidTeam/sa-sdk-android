@@ -60,8 +60,11 @@ public final class SensorsDataUtils {
         // Wifi
         ConnectivityManager manager = (ConnectivityManager)
                 context.getSystemService(Context.CONNECTIVITY_SERVICE);
-        if (manager.getNetworkInfo(ConnectivityManager.TYPE_WIFI).isConnectedOrConnecting()) {
-            return "WIFI";
+        if (manager != null) {
+            NetworkInfo networkInfo = manager.getNetworkInfo(ConnectivityManager.TYPE_WIFI);
+            if (networkInfo != null && networkInfo.isConnectedOrConnecting()) {
+                return "WIFI";
+            }
         }
 
         // Mobile network
@@ -73,6 +76,8 @@ public final class SensorsDataUtils {
             case TelephonyManager.NETWORK_TYPE_GPRS:
             case TelephonyManager.NETWORK_TYPE_EDGE:
             case TelephonyManager.NETWORK_TYPE_CDMA:
+            case TelephonyManager.NETWORK_TYPE_1xRTT:
+            case TelephonyManager.NETWORK_TYPE_IDEN:
                 return "2G";
             case TelephonyManager.NETWORK_TYPE_UMTS:
             case TelephonyManager.NETWORK_TYPE_EVDO_0:
@@ -90,6 +95,20 @@ public final class SensorsDataUtils {
 
         // disconnected to the internet
         return "NULL";
+    }
+
+    public static boolean isNetworkAvailable(Context context) {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+            NetworkInfo networkInfo = cm.getActiveNetworkInfo();
+            if (networkInfo != null && networkInfo.isConnected()) {
+                return true;
+            }
+            return false;
+        } catch (Exception e) {
+            e.printStackTrace();
+            return false;
+        }
     }
 
     private static final String SHARED_PREF_EDITS_FILE = "sensorsdata";
